@@ -23,7 +23,6 @@ def init_db():
     CREATE TABLE IF NOT EXISTS teams (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL UNIQUE,
-        budget REAL DEFAULT 1000.00,
         location TEXT DEFAULT '',
         admin_pin TEXT NOT NULL,
         created_at TEXT NOT NULL
@@ -172,14 +171,14 @@ def log_event(conn, actor, action, details="", team_id=None):
               (ts, actor or '', action, details or '', team_id))
 
 # ---------- Team Management ----------
-def create_team(name, admin_pin, budget=1000.00, location="Office"):
+def create_team(name, admin_pin, location="Office"):
     """Create a new team."""
     conn = get_conn()
     c = conn.cursor()
     try:
         ts = datetime.utcnow().isoformat() + "Z"
-        c.execute("INSERT INTO teams (name, admin_pin, budget, location, created_at) VALUES (?, ?, ?, ?, ?)",
-                  (name, admin_pin, budget, location, ts))
+        c.execute("INSERT INTO teams (name, admin_pin, location, created_at) VALUES (?, ?, ?, ?)",
+                  (name, admin_pin, location, ts))
         team_id = c.lastrowid
         log_event(conn, 'system', 'create_team', f"Created team: {name}", team_id)
         conn.commit()
@@ -195,7 +194,7 @@ def get_team(team_id):
     """Get team details by ID."""
     conn = get_conn()
     c = conn.cursor()
-    c.execute("SELECT id, name, budget, location, admin_pin FROM teams WHERE id = ?", (team_id,))
+    c.execute("SELECT id, name, location, admin_pin FROM teams WHERE id = ?", (team_id,))
     team = c.fetchone()
     conn.close()
     return team
@@ -204,7 +203,7 @@ def get_team_by_name(name):
     """Get team details by name."""
     conn = get_conn()
     c = conn.cursor()
-    c.execute("SELECT id, name, budget, location, admin_pin FROM teams WHERE name = ?", (name,))
+    c.execute("SELECT id, name, location, admin_pin FROM teams WHERE name = ?", (name,))
     team = c.fetchone()
     conn.close()
     return team
@@ -213,21 +212,19 @@ def list_teams():
     """List all teams."""
     conn = get_conn()
     c = conn.cursor()
-    c.execute("SELECT id, name, budget, location, created_at FROM teams ORDER BY created_at DESC")
+    c.execute("SELECT id, name, location, created_at FROM teams ORDER BY created_at DESC")
     teams = c.fetchall()
     conn.close()
     return teams
 
-def update_team_settings(team_id, budget=None, location=None):
-    """Update team budget and/or location."""
+def update_team_settings(team_id, location=None):
+    """Update team location."""
     conn = get_conn()
     c = conn.cursor()
     try:
-        if budget is not None:
-            c.execute("UPDATE teams SET budget = ? WHERE id = ?", (budget, team_id))
         if location is not None:
             c.execute("UPDATE teams SET location = ? WHERE id = ?", (location, team_id))
-        log_event(conn, 'admin', 'update_team_settings', f"budget={budget}, location={location}", team_id)
+        log_event(conn, 'admin', 'update_team_settings', f"location={location}", team_id)
         conn.commit()
         return {"success": True}
     except Exception as e:
@@ -769,10 +766,9 @@ def auto_load_participants():
             if not team:
                 # Create team using environment variables
                 admin_pin = os.getenv(f"TEAM_{team_name.upper().replace(' ', '_')}_ADMIN_PIN", "default123")
-                budget = float(os.getenv(f"TEAM_{team_name.upper().replace(' ', '_')}_BUDGET", "1000.00"))
                 location = os.getenv(f"TEAM_{team_name.upper().replace(' ', '_')}_LOCATION", "Office")
 
-                result = create_team(team_name, admin_pin, budget, location)
+                result = create_team(team_name, admin_pin, location)
                 if "error" in result:
                     st.error(f"Failed to create team {team_name}: {result['error']}")
                     continue
@@ -1388,7 +1384,6 @@ if st.session_state.page == "team_selection":
         new_team_name = st.text_input("Team Name", key="new_team_name", placeholder="e.g., Tech Team 2025")
         new_admin_pin = st.text_input("Admin PIN", type="password", key="new_admin_pin",
                                       placeholder="Set a PIN for admin access")
-        new_budget = st.slider("Gift Budget (₹)", min_value=500.00, max_value=1000.00, value=1000.0, step=5.0, key="new_budget")
         new_location = st.text_input("Exchange Location", key="new_location",
                                      placeholder="e.g., Office Party Room, Virtual")
 
@@ -1400,7 +1395,7 @@ if st.session_state.page == "team_selection":
                 elif not new_admin_pin.strip():
                     st.error("Please set an admin PIN")
                 else:
-                    result = create_team(new_team_name.strip(), new_admin_pin, new_budget, new_location)
+                    result = create_team(new_team_name.strip(), new_admin_pin, new_location)
                     if "error" in result:
                         st.error(result["error"])
                     else:
@@ -1432,7 +1427,7 @@ elif st.session_state.page == "auth":
     st.markdown(f"""
     <div class="team-banner">
         <h3>🎁 {team["name"]}</h3>
-        <p>💰 Budget: ₹{team["budget"]:.0f} | 📍 Location: {team["location"] or 'Not set'}</p>
+        <p>📍 Location: {team["location"] or 'Not set'}</p>
     </div>
     """, unsafe_allow_html=True)
 
@@ -1498,7 +1493,7 @@ elif st.session_state.page == "mode_selection":
     st.markdown(f"""
     <div class="team-banner">
         <h3>🎁 {team["name"]} | Welcome, {st.session_state.participant_name}! 👋</h3>
-        <p>💰 Budget: ₹{team["budget"]:.0f} | 📍 Location: {team["location"] or 'Not set'}</p>
+        <p>📍 Location: {team["location"] or 'Not set'}</p>
     </div>
     """, unsafe_allow_html=True)
 
@@ -1561,7 +1556,7 @@ elif st.session_state.page == "receiver_mode":
     st.markdown(f"""
     <div class="team-banner">
         <h3>👋 {st.session_state.participant_name} | {team["name"]}</h3>
-        <p>💰 Budget: ₹{team["budget"]:.0f} | 📍 Location: {team["location"] or 'Not set'}</p>
+        <p>📍 Location: {team["location"] or 'Not set'}</p>
     </div>
     """, unsafe_allow_html=True)
 
@@ -1783,7 +1778,7 @@ elif st.session_state.page == "santa_mode":
     st.markdown(f"""
     <div class="team-banner">
         <h3>👋 {st.session_state.participant_name} | {team["name"]}</h3>
-        <p>💰 Budget: ₹{team["budget"]:.0f} | 📍 Location: {team["location"] or 'Not set'}</p>
+        <p>📍 Location: {team["location"] or 'Not set'}</p>
     </div>
     """, unsafe_allow_html=True)
 
@@ -1959,7 +1954,7 @@ elif st.session_state.page == "main":
     st.markdown(f"""
     <div class="team-banner">
         <h3>🎁 {team["name"]}</h3>
-        <p>💰 Budget: ₹{team["budget"]:.0f} | 📍 Location: {team["location"] or 'Not set'}</p>
+        <p>📍 Location: {team["location"] or 'Not set'}</p>
     </div>
     """, unsafe_allow_html=True)
 
