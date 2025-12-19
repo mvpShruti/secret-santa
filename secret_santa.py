@@ -23,7 +23,7 @@ def init_db():
     CREATE TABLE IF NOT EXISTS teams (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL UNIQUE,
-        budget REAL DEFAULT 50.0,
+        budget REAL DEFAULT 1000.00,
         location TEXT DEFAULT '',
         admin_pin TEXT NOT NULL,
         created_at TEXT NOT NULL
@@ -172,7 +172,7 @@ def log_event(conn, actor, action, details="", team_id=None):
               (ts, actor or '', action, details or '', team_id))
 
 # ---------- Team Management ----------
-def create_team(name, admin_pin, budget=50.0, location=""):
+def create_team(name, admin_pin, budget=1000.00, location="Office"):
     """Create a new team."""
     conn = get_conn()
     c = conn.cursor()
@@ -769,8 +769,8 @@ def auto_load_participants():
             if not team:
                 # Create team using environment variables
                 admin_pin = os.getenv(f"TEAM_{team_name.upper().replace(' ', '_')}_ADMIN_PIN", "default123")
-                budget = float(os.getenv(f"TEAM_{team_name.upper().replace(' ', '_')}_BUDGET", "50.0"))
-                location = os.getenv(f"TEAM_{team_name.upper().replace(' ', '_')}_LOCATION", "")
+                budget = float(os.getenv(f"TEAM_{team_name.upper().replace(' ', '_')}_BUDGET", "1000.00"))
+                location = os.getenv(f"TEAM_{team_name.upper().replace(' ', '_')}_LOCATION", "Office")
 
                 result = create_team(team_name, admin_pin, budget, location)
                 if "error" in result:
@@ -1388,7 +1388,7 @@ if st.session_state.page == "team_selection":
         new_team_name = st.text_input("Team Name", key="new_team_name", placeholder="e.g., Tech Team 2025")
         new_admin_pin = st.text_input("Admin PIN", type="password", key="new_admin_pin",
                                       placeholder="Set a PIN for admin access")
-        new_budget = st.slider("Gift Budget (₹)", min_value=10.0, max_value=200.0, value=50.0, step=5.0, key="new_budget")
+        new_budget = st.slider("Gift Budget (₹)", min_value=500.00, max_value=1000.00, value=1000.0, step=5.0, key="new_budget")
         new_location = st.text_input("Exchange Location", key="new_location",
                                      placeholder="e.g., Office Party Room, Virtual")
 
