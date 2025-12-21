@@ -2572,15 +2572,28 @@ def detect_database():
     DB_CONN_STRING = os.getenv("DATABASE_URL")
     DB_TYPE = "postgresql" if DB_CONN_STRING else "sqlite"
     
+# def get_conn():
+#     if DATABASE_URL:
+#         conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+#         conn.autocommit = False
+#         return conn, "postgres"
+#     else:
+#         conn = sqlite3.connect(DB_PATH, timeout=10)
+#         conn.row_factory = sqlite3.Row
+#         return conn, "sqlite"
 def get_conn():
-    if DATABASE_URL:
-        conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
-        conn.autocommit = False
-        return conn, "postgres"
-    else:
-        conn = sqlite3.connect(DB_PATH, timeout=10)
-        conn.row_factory = sqlite3.Row
-        return conn, "sqlite"
+    conn = psycopg2.connect(
+        host=st.secrets["DB_HOST"],
+        port=st.secrets["DB_PORT"],
+        dbname=st.secrets["DB_NAME"],
+        user=st.secrets["DB_USER"],
+        password=st.secrets["DB_PASSWORD"],
+        sslmode="require",
+        cursor_factory=RealDictCursor,
+        connect_timeout=10,
+    )
+    return conn, "postgres"
+
 
 
 def init_db():
