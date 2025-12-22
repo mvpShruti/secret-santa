@@ -400,7 +400,7 @@
 #     c = conn.cursor()
 #     try:
 #         if location is not None:
-#             c.execute("UPDATE teams SET location = ? WHERE id = ?", (location, team_id))
+#             c.execute("UPDATE teams SET location WHERE id = ?", (location, team_id))
 #         log_event(conn, 'admin', 'update_team_settings', f"location={location}", team_id)
 #         conn.commit()
 #         return {"success": True}
@@ -2527,211 +2527,54 @@
 
 # streamlit_secretsanta_with_audit.py
 import streamlit as st
-import sqlite3
 import pandas as pd
 import os
 import random
 from datetime import datetime
+from st_supabase_connection import SupabaseConnection
 
 # =========================================================
 # CONFIG & CONSTANTS
 # =========================================================
 
-DB_PATH = "secretsanta.db"
 ADMIN_PIN_ENV = "SECRETSANTA_ADMIN_PIN"
 
-DB_TYPE = None
-DB_CONN_STRING = None
-
 # =========================================================
-# DATABASE + BUSINESS LOGIC (UNCHANGED)
+# DATABASE + BUSINESS LOGIC
 # =========================================================
-# ⚠️ Everything below this line is IDENTICAL to your logic
-# (No functional changes, only moved structurally)
 
-# ================= DATABASE =================
-
-import sqlite3
-import psycopg2
-from psycopg2.extras import RealDictCursor
-import os
-
-DB_PATH = "secretsanta.db"
-DATABASE_URL = os.getenv("DATABASE_URL")
-
-def detect_database():
-    global DB_TYPE, DB_CONN_STRING
-    try:
-        if "DATABASE_URL" in st.secrets:
-            DB_CONN_STRING = st.secrets["DATABASE_URL"]
-            DB_TYPE = "postgresql"
-            return
-    except Exception:
-        pass
-
-    DB_CONN_STRING = os.getenv("DATABASE_URL")
-    DB_TYPE = "postgresql" if DB_CONN_STRING else "sqlite"
-    
-# def get_conn():
-#     if DATABASE_URL:
-#         conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
-#         conn.autocommit = False
-#         return conn, "postgres"
-#     else:
-#         conn = sqlite3.connect(DB_PATH, timeout=10)
-#         conn.row_factory = sqlite3.Row
-#         return conn, "sqlite"
 def get_conn():
-    conn = psycopg2.connect(
-        host=st.secrets["DB_HOST"],
-        port=st.secrets["DB_PORT"],
-        dbname=st.secrets["DB_NAME"],
-        user=st.secrets["DB_USER"],
-        password=st.secrets["DB_PASSWORD"],
-        sslmode="require",
-        cursor_factory=RealDictCursor,
-        connect_timeout=10,
-    )
-    return conn, "postgres"
+    """Get Supabase connection using st.connection."""
+    return st.connection("supabase", type=SupabaseConnection)
 
 
 
 def init_db():
-    conn, db = get_conn()
-    c = conn.cursor()
+    """Check if survey questions need to be populated. Tables should already exist in Supabase."""
+    conn = get_conn()
 
-    if db == "postgres":
-        ID = "SERIAL PRIMARY KEY"
-    else:
-        ID = "INTEGER PRIMARY KEY AUTOINCREMENT"
+    # Check if survey questions need to be populated
+    result = conn.table("survey_questions").select("id", count="exact").execute()
 
-    c.execute(f"""
-    CREATE TABLE IF NOT EXISTS teams (
-        id {ID},
-        name TEXT UNIQUE NOT NULL,
-        location TEXT,
-        admin_pin TEXT NOT NULL,
-        created_at TEXT NOT NULL
-    )
-    """)
-
-    c.execute(f"""
-    CREATE TABLE IF NOT EXISTS participants (
-        id {ID},
-        team_id INTEGER,
-        name TEXT,
-        secret TEXT,
-        assigned INTEGER DEFAULT 0,
-        email TEXT,
-        has_completed_survey INTEGER DEFAULT 0,
-        last_login TEXT,
-        UNIQUE(team_id, name)
-    )
-    """)
-
-    c.execute(f"""
-    CREATE TABLE IF NOT EXISTS assignments (
-        id {ID},
-        team_id INTEGER,
-        drawer_name TEXT,
-        recipient_name TEXT,
-        timestamp TEXT,
-        revealed INTEGER DEFAULT 0,
-        revealed_timestamp TEXT
-    )
-    """)
-
-    c.execute(f"""
-    CREATE TABLE IF NOT EXISTS logs (
-        id {ID},
-        team_id INTEGER,
-        timestamp TEXT,
-        actor TEXT,
-        action TEXT,
-        details TEXT
-    )
-    """)
-
-    # Create wishlists table
-    c.execute(f"""
-    CREATE TABLE IF NOT EXISTS wishlists (
-        id {ID},
-        participant_id INTEGER NOT NULL,
-        team_id INTEGER NOT NULL,
-        item_text TEXT NOT NULL,
-        priority INTEGER DEFAULT 2,
-        item_link TEXT,
-        item_order INTEGER DEFAULT 0,
-        created_at TEXT NOT NULL
-    )
-    """)
-
-    # Create survey_questions table
-    c.execute(f"""
-    CREATE TABLE IF NOT EXISTS survey_questions (
-        id {ID},
-        question_text TEXT NOT NULL,
-        option_a TEXT NOT NULL,
-        option_b TEXT NOT NULL,
-        emoji_a TEXT,
-        emoji_b TEXT,
-        display_order INTEGER DEFAULT 0
-    )
-    """)
-
-    # Create survey_responses table
-    c.execute(f"""
-    CREATE TABLE IF NOT EXISTS survey_responses (
-        id {ID},
-        participant_id INTEGER NOT NULL,
-        team_id INTEGER NOT NULL,
-        question_id INTEGER NOT NULL,
-        answer TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        UNIQUE(participant_id, team_id, question_id)
-    )
-    """)
-
-    # Create messages table
-    c.execute(f"""
-    CREATE TABLE IF NOT EXISTS messages (
-        id {ID},
-        team_id INTEGER NOT NULL,
-        assignment_id INTEGER NOT NULL,
-        sender_role TEXT NOT NULL,
-        message_type TEXT NOT NULL,
-        content TEXT NOT NULL,
-        is_read INTEGER DEFAULT 0,
-        created_at TEXT NOT NULL
-    )
-    """)
-
-    # Populate survey questions if empty
-    c.execute("SELECT COUNT(*) as count FROM survey_questions")
-    row = c.fetchone()
-    if row and row["count"] == 0:
+    if result.count == 0:
         populate_survey_questions(conn)
-
-    conn.commit()
-    conn.close()
 
 
 
 
 def log_event(conn, actor, action, details="", team_id=None):
-    """Insert a log row. Accepts an open conn to allow logging inside transactions."""
+    """Insert a log row using Supabase."""
     ts = datetime.utcnow().isoformat() + "Z"
-    c = conn.cursor()
-    if DATABASE_URL:
-        c.execute("INSERT INTO logs (timestamp, actor, action, details, team_id) VALUES (%s, %s, %s, %s, %s)",
-                  (ts, actor or '', action, details or '', team_id))
-    else:
-        c.execute("INSERT INTO logs (timestamp, actor, action, details, team_id) VALUES (?, ?, ?, ?, ?)",
-                  (ts, actor or '', action, details or '', team_id))
+    conn.table("logs").insert({
+        "timestamp": ts,
+        "actor": actor or '',
+        "action": action,
+        "details": details or '',
+        "team_id": team_id
+    }).execute()
 
 def populate_survey_questions(conn):
     """Pre-populate survey with 'this or that' questions."""
-    c = conn.cursor()
     questions = [
         ("Homemade or Store-bought?", "Homemade", "Store-bought", "🧶", "🛍️", 1),
         ("One Big Gift or Many Little Gifts?", "One Big Gift", "Many Little Gifts", "🎁", "🎀", 2),
@@ -2741,121 +2584,89 @@ def populate_survey_questions(conn):
     ]
 
     for q_text, opt_a, opt_b, emoji_a, emoji_b, order in questions:
-        if DATABASE_URL:
-            c.execute("""
-                INSERT INTO survey_questions (question_text, option_a, option_b, emoji_a, emoji_b, display_order)
-                VALUES (%s, %s, %s, %s, %s, %s)
-            """, (q_text, opt_a, opt_b, emoji_a, emoji_b, order))
-        else:
-            c.execute("""
-                INSERT INTO survey_questions (question_text, option_a, option_b, emoji_a, emoji_b, display_order)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (q_text, opt_a, opt_b, emoji_a, emoji_b, order))
+        conn.table("survey_questions").insert({
+            "question_text": q_text,
+            "option_a": opt_a,
+            "option_b": opt_b,
+            "emoji_a": emoji_a,
+            "emoji_b": emoji_b,
+            "display_order": order
+        }).execute()
 
     log_event(conn, 'system', 'populate_survey_questions', f'Added {len(questions)} questions', None)
 
 def create_team(name, admin_pin, location="Office"):
     """Create a new team."""
-    conn, db = get_conn()
-    c = conn.cursor()
+    conn = get_conn()
     try:
         ts = datetime.utcnow().isoformat() + "Z"
-        if db == "postgres":
-            c.execute("INSERT INTO teams (name, admin_pin, location, created_at) VALUES (%s, %s, %s, %s) RETURNING id",
-                      (name, admin_pin, location, ts))
-            team_id = c.fetchone()['id']
-        else:
-            c.execute("INSERT INTO teams (name, admin_pin, location, created_at) VALUES (?, ?, ?, ?)",
-                      (name, admin_pin, location, ts))
-            team_id = c.lastrowid
+        result = conn.table("teams").insert({
+            "name": name,
+            "admin_pin": admin_pin,
+            "location": location,
+            "created_at": ts
+        }).execute()
+
+        team_id = result.data[0]['id']
         log_event(conn, 'system', 'create_team', f"Created team: {name}", team_id)
-        conn.commit()
-        conn.close()
         return {"success": True, "team_id": team_id}
     except Exception as e:
-        conn.close()
-        if "unique" in str(e).lower() or "duplicate" in str(e).lower():
+        if "duplicate" in str(e).lower() or "unique" in str(e).lower():
             return {"error": "Team name already exists."}
         else:
             return {"error": f"Failed to create team: {e}"}
 
 def get_team(team_id):
     """Get team details by ID."""
-    conn, db = get_conn()
-    c = conn.cursor()
-    if db == "postgres":
-        c.execute("SELECT id, name, location, admin_pin FROM teams WHERE id = %s", (team_id,))
-    else:
-        c.execute("SELECT id, name, location, admin_pin FROM teams WHERE id = ?", (team_id,))
-    team = c.fetchone()
-    conn.close()
-    return team
+    conn = get_conn()
+    result = conn.table("teams").select("id, name, location, admin_pin").eq("id", team_id).execute()
+    if result.data:
+        return result.data[0]
+    return None
 
 def get_team_by_name(name):
     """Get team details by name."""
-    conn, db = get_conn()
-    c = conn.cursor()
-    if db == "postgres":
-        c.execute("SELECT id, name, location, admin_pin FROM teams WHERE name = %s", (name,))
-    else:
-        c.execute("SELECT id, name, location, admin_pin FROM teams WHERE name = ?", (name,))
-    team = c.fetchone()
-    conn.close()
-    return team
+    conn = get_conn()
+    result = conn.table("teams").select("id, name, location, admin_pin").eq("name", name).execute()
+    if result.data:
+        return result.data[0]
+    return None
 
 def list_teams():
     """List all teams."""
-    conn, db = get_conn()
-    c = conn.cursor()
-    c.execute("SELECT id, name, location, created_at FROM teams ORDER BY created_at DESC")
-    teams = c.fetchall()
-    conn.close()
-    return teams
+    conn = get_conn()
+    result = conn.table("teams").select("id, name, location, created_at").order("created_at", desc=True).execute()
+    return result.data
 
 def seed_participants_from_df(df: pd.DataFrame, team_id):
-    conn, db = get_conn()
-    c = conn.cursor()
+    conn = get_conn()
     for _, row in df.iterrows():
         name = str(row['name']).strip()
         secret = str(row['secret']).strip() if 'secret' in row and not pd.isna(row['secret']) else ''
         if not name:
             continue
         try:
-            if db == "postgres":
-                c.execute("INSERT INTO participants (team_id, name, secret) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
-                          (team_id, name, secret))
-            else:
-                c.execute("INSERT OR IGNORE INTO participants (team_id, name, secret) VALUES (?, ?, ?)",
-                          (team_id, name, secret))
+            # Use upsert to handle duplicates
+            conn.table("participants").upsert({
+                "team_id": team_id,
+                "name": name,
+                "secret": secret
+            }, on_conflict="team_id,name").execute()
             log_event(conn, 'admin', 'seed_participant', f"seeded {name}", team_id)
         except Exception as e:
             st.error(f"DB error while inserting {name}: {e}")
-    conn.commit()
-    conn.close()
 
 def list_participants(team_id):
-    conn, db = get_conn()
-    c = conn.cursor()
-    if db == "postgres":
-        c.execute("SELECT name, secret, assigned FROM participants WHERE team_id = %s ORDER BY name", (team_id,))
-    else:
-        c.execute("SELECT name, secret, assigned FROM participants WHERE team_id = ? ORDER BY name", (team_id,))
-    rows = c.fetchall()
-    conn.close()
-    return rows
+    conn = get_conn()
+    result = conn.table("participants").select("name, secret, assigned").eq("team_id", team_id).order("name").execute()
+    return result.data
 
 def validate_participant(name, secret, team_id):
-    conn, db = get_conn()
-    c = conn.cursor()
-    if db == "postgres":
-        c.execute("SELECT secret FROM participants WHERE name = %s AND team_id = %s", (name, team_id))
-    else:
-        c.execute("SELECT secret FROM participants WHERE name = ? AND team_id = ?", (name, team_id))
-    row = c.fetchone()
-    conn.close()
-    if not row:
+    conn = get_conn()
+    result = conn.table("participants").select("secret").eq("name", name).eq("team_id", team_id).execute()
+    if not result.data:
         return False, "Participant name not registered."
-    registered_secret = row["secret"] or ""
+    registered_secret = result.data[0]["secret"] or ""
     if registered_secret == "":
         return True, ""
     if secret == registered_secret:
@@ -2869,22 +2680,17 @@ def authenticate_participant(name, secret, team_id):
     if not ok:
         return {"error": msg}
 
-    conn, db = get_conn()
-    c = conn.cursor()
+    conn = get_conn()
 
     # Update last_login
     ts = datetime.utcnow().isoformat() + "Z"
-    if db == "postgres":
-        c.execute("UPDATE participants SET last_login = %s WHERE name = %s AND team_id = %s", (ts, name, team_id))
-        c.execute("SELECT id, name, email, has_completed_survey FROM participants WHERE name = %s AND team_id = %s", (name, team_id))
-    else:
-        c.execute("UPDATE participants SET last_login = ? WHERE name = ? AND team_id = ?", (ts, name, team_id))
-        c.execute("SELECT id, name, email, has_completed_survey FROM participants WHERE name = ? AND team_id = ?", (name, team_id))
+    conn.table("participants").update({"last_login": ts}).eq("name", name).eq("team_id", team_id).execute()
 
-    participant = c.fetchone()
+    # Get participant details
+    result = conn.table("participants").select("id, name, email, has_completed_survey").eq("name", name).eq("team_id", team_id).execute()
+    participant = result.data[0]
+
     log_event(conn, name, 'login_success', '', team_id)
-    conn.commit()
-    conn.close()
 
     return {
         "success": True,
@@ -2896,24 +2702,17 @@ def authenticate_participant(name, secret, team_id):
 
 def generate_all_assignments(team_id):
     """Pre-generate a complete Secret Santa cycle for all participants."""
-    conn, db = get_conn()
-    c = conn.cursor()
+    conn = get_conn()
     try:
         # Clear existing assignments
-        if db == "postgres":
-            c.execute("DELETE FROM assignments WHERE team_id = %s", (team_id,))
-            c.execute("UPDATE participants SET assigned = 0 WHERE team_id = %s", (team_id,))
-            c.execute("SELECT name FROM participants WHERE team_id = %s ORDER BY name", (team_id,))
-        else:
-            c.execute("DELETE FROM assignments WHERE team_id = ?", (team_id,))
-            c.execute("UPDATE participants SET assigned = 0 WHERE team_id = ?", (team_id,))
-            c.execute("SELECT name FROM participants WHERE team_id = ? ORDER BY name", (team_id,))
+        conn.table("assignments").delete().eq("team_id", team_id).execute()
+        conn.table("participants").update({"assigned": 0}).eq("team_id", team_id).execute()
 
-        participants = [r["name"] for r in c.fetchall()]
+        # Get all participants
+        result = conn.table("participants").select("name").eq("team_id", team_id).order("name").execute()
+        participants = [r["name"] for r in result.data]
 
         if len(participants) < 2:
-            conn.rollback()
-            conn.close()
             return {"error": "Need at least 2 participants to generate assignments."}
 
         # Generate valid derangement (no one gets themselves)
@@ -2938,225 +2737,134 @@ def generate_all_assignments(team_id):
         # Insert all assignments
         ts = datetime.utcnow().isoformat() + "Z"
         for giver, receiver in zip(participants, receivers):
-            if db == "postgres":
-                c.execute("INSERT INTO assignments (team_id, drawer_name, recipient_name, timestamp) VALUES (%s, %s, %s, %s)",
-                          (team_id, giver, receiver, ts))
-                c.execute("UPDATE participants SET assigned = 1 WHERE name = %s AND team_id = %s", (receiver, team_id))
-            else:
-                c.execute("INSERT INTO assignments (team_id, drawer_name, recipient_name, timestamp) VALUES (?, ?, ?, ?)",
-                          (team_id, giver, receiver, ts))
-                c.execute("UPDATE participants SET assigned = 1 WHERE name = ? AND team_id = ?", (receiver, team_id))
+            conn.table("assignments").insert({
+                "team_id": team_id,
+                "drawer_name": giver,
+                "recipient_name": receiver,
+                "timestamp": ts
+            }).execute()
+            conn.table("participants").update({"assigned": 1}).eq("name", receiver).eq("team_id", team_id).execute()
 
         log_event(conn, 'admin', 'generate_all_assignments', f"generated {len(participants)} assignments", team_id)
-        conn.commit()
-        conn.close()
         return {"success": True, "count": len(participants)}
     except Exception as e:
-        conn.rollback()
-        conn.close()
         log_event(conn, 'admin', 'generate_assignments_error', str(e), team_id)
         return {"error": f"Failed to generate assignments: {e}"}
 
 def get_my_assignment(participant_name, team_id):
     """Get the assignment where participant is the drawer (Santa)."""
-    conn, db = get_conn()
-    c = conn.cursor()
-    if db == "postgres":
-        c.execute("""
-            SELECT id, recipient_name, timestamp, revealed, revealed_timestamp
-            FROM assignments
-            WHERE drawer_name = %s AND team_id = %s
-        """, (participant_name, team_id))
-    else:
-        c.execute("""
-            SELECT id, recipient_name, timestamp, revealed, revealed_timestamp
-            FROM assignments
-            WHERE drawer_name = ? AND team_id = ?
-        """, (participant_name, team_id))
-    assignment = c.fetchone()
-    conn.close()
-    return assignment
+    conn = get_conn()
+    result = conn.table("assignments").select("id, recipient_name, timestamp, revealed, revealed_timestamp").eq("drawer_name", participant_name).eq("team_id", team_id).execute()
+    if result.data:
+        return result.data[0]
+    return None
 
 def draw_random_recipient(drawer_name, team_id):
     """Reveal the pre-generated assignment for the drawer."""
-    conn, db = get_conn()
-    c = conn.cursor()
+    conn = get_conn()
     try:
-        if db == "postgres":
-            c.execute("SELECT id FROM participants WHERE name = %s AND team_id = %s", (drawer_name, team_id))
-            drawer_row = c.fetchone()
-            if not drawer_row:
-                conn.close()
-                return {"error": "Drawer not found in participant list."}
+        # Check if drawer exists
+        result = conn.table("participants").select("id").eq("name", drawer_name).eq("team_id", team_id).execute()
+        if not result.data:
+            return {"error": "Drawer not found in participant list."}
 
-            c.execute("SELECT recipient_name, timestamp, revealed, revealed_timestamp FROM assignments WHERE drawer_name = %s AND team_id = %s",
-                      (drawer_name, team_id))
-        else:
-            c.execute("SELECT id FROM participants WHERE name = ? AND team_id = ?", (drawer_name, team_id))
-            drawer_row = c.fetchone()
-            if not drawer_row:
-                conn.close()
-                return {"error": "Drawer not found in participant list."}
+        # Look up their pre-generated assignment
+        result = conn.table("assignments").select("recipient_name, timestamp, revealed, revealed_timestamp").eq("drawer_name", drawer_name).eq("team_id", team_id).execute()
 
-            c.execute("SELECT recipient_name, timestamp, revealed, revealed_timestamp FROM assignments WHERE drawer_name = ? AND team_id = ?",
-                      (drawer_name, team_id))
-
-        assignment = c.fetchone()
-
-        if not assignment:
-            conn.close()
+        if not result.data:
+            log_event(conn, drawer_name, 'draw_failed_no_assignment', 'no pre-generated assignment found', team_id)
             return {"error": "No assignment found. Admin needs to generate assignments first."}
 
+        assignment = result.data[0]
         recipient = assignment["recipient_name"]
         timestamp = assignment["timestamp"]
         already_revealed = assignment["revealed"]
         revealed_ts = assignment["revealed_timestamp"]
 
         if already_revealed:
-            conn.close()
+            # Already revealed before, just show it again
             log_event(conn, drawer_name, 'view_existing_assignment', recipient, team_id)
             return {"recipient": recipient, "timestamp": timestamp, "revealed_timestamp": revealed_ts, "already_revealed": True}
         else:
+            # First time revealing - mark as revealed
             reveal_ts = datetime.utcnow().isoformat() + "Z"
-            if db == "postgres":
-                c.execute("UPDATE assignments SET revealed = 1, revealed_timestamp = %s WHERE drawer_name = %s AND team_id = %s",
-                          (reveal_ts, drawer_name, team_id))
-            else:
-                c.execute("UPDATE assignments SET revealed = 1, revealed_timestamp = ? WHERE drawer_name = ? AND team_id = ?",
-                          (reveal_ts, drawer_name, team_id))
+            conn.table("assignments").update({"revealed": 1, "revealed_timestamp": reveal_ts}).eq("drawer_name", drawer_name).eq("team_id", team_id).execute()
             log_event(conn, drawer_name, 'draw_success', f"recipient={recipient}", team_id)
-            conn.commit()
-            conn.close()
             return {"recipient": recipient, "timestamp": timestamp, "revealed_timestamp": reveal_ts, "already_revealed": False}
 
     except Exception as e:
-        conn.rollback()
-        conn.close()
+        log_event(conn, drawer_name, 'draw_exception', str(e), team_id)
         return {"error": f"DB transaction error: {e}"}
 
 def get_wishlist(participant_id, team_id):
     """Get all wishlist items for a participant, ordered by item_order."""
-    conn, db = get_conn()
-    c = conn.cursor()
-    if db == "postgres":
-        c.execute("""
-            SELECT id, item_text, priority, item_link, item_order, created_at
-            FROM wishlists
-            WHERE participant_id = %s AND team_id = %s
-            ORDER BY item_order ASC
-        """, (participant_id, team_id))
-    else:
-        c.execute("""
-            SELECT id, item_text, priority, item_link, item_order, created_at
-            FROM wishlists
-            WHERE participant_id = ? AND team_id = ?
-            ORDER BY item_order ASC
-        """, (participant_id, team_id))
-    items = c.fetchall()
-    conn.close()
-    return items
+    conn = get_conn()
+    result = conn.table("wishlists").select("id, item_text, priority, item_link, item_order, created_at").eq("participant_id", participant_id).eq("team_id", team_id).order("item_order").execute()
+    return result.data
 
 def add_wishlist_item(participant_id, team_id, item_text, priority=2, item_link=""):
     """Add a wishlist item."""
-    conn, db = get_conn()
-    c = conn.cursor()
+    conn = get_conn()
     ts = datetime.utcnow().isoformat() + "Z"
 
     # Get max order for this participant
-    if db == "postgres":
-        c.execute("SELECT COALESCE(MAX(item_order), -1) as max_order FROM wishlists WHERE participant_id = %s AND team_id = %s",
-                  (participant_id, team_id))
-    else:
-        c.execute("SELECT COALESCE(MAX(item_order), -1) as max_order FROM wishlists WHERE participant_id = ? AND team_id = ?",
-                  (participant_id, team_id))
-    max_order = c.fetchone()["max_order"]
+    result = conn.table("wishlists").select("item_order").eq("participant_id", participant_id).eq("team_id", team_id).order("item_order", desc=True).limit(1).execute()
+    max_order = result.data[0]["item_order"] if result.data else -1
     new_order = max_order + 1
 
-    if db == "postgres":
-        c.execute("""
-            INSERT INTO wishlists (participant_id, team_id, item_text, priority, item_link, item_order, created_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-        """, (participant_id, team_id, item_text, priority, item_link, new_order, ts))
-    else:
-        c.execute("""
-            INSERT INTO wishlists (participant_id, team_id, item_text, priority, item_link, item_order, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (participant_id, team_id, item_text, priority, item_link, new_order, ts))
+    conn.table("wishlists").insert({
+        "participant_id": participant_id,
+        "team_id": team_id,
+        "item_text": item_text,
+        "priority": priority,
+        "item_link": item_link,
+        "item_order": new_order,
+        "created_at": ts
+    }).execute()
 
     log_event(conn, f'participant_{participant_id}', 'add_wishlist_item', item_text, team_id)
-    conn.commit()
-    conn.close()
     return {"success": True}
 
 def update_wishlist_item(item_id, item_text=None, priority=None, item_link=None):
     """Update a wishlist item."""
-    conn, db = get_conn()
-    c = conn.cursor()
+    conn = get_conn()
+    updates = {}
 
-    if db == "postgres":
-        if item_text is not None:
-            c.execute("UPDATE wishlists SET item_text = %s WHERE id = %s", (item_text, item_id))
-        if priority is not None:
-            c.execute("UPDATE wishlists SET priority = %s WHERE id = %s", (priority, item_id))
-        if item_link is not None:
-            c.execute("UPDATE wishlists SET item_link = %s WHERE id = %s", (item_link, item_id))
-    else:
-        if item_text is not None:
-            c.execute("UPDATE wishlists SET item_text = ? WHERE id = ?", (item_text, item_id))
-        if priority is not None:
-            c.execute("UPDATE wishlists SET priority = ? WHERE id = ?", (priority, item_id))
-        if item_link is not None:
-            c.execute("UPDATE wishlists SET item_link = ? WHERE id = ?", (item_link, item_id))
+    if item_text is not None:
+        updates["item_text"] = item_text
+    if priority is not None:
+        updates["priority"] = priority
+    if item_link is not None:
+        updates["item_link"] = item_link
 
-    conn.commit()
-    conn.close()
+    if updates:
+        conn.table("wishlists").update(updates).eq("id", item_id).execute()
+
     return {"success": True}
 
 def delete_wishlist_item(item_id):
     """Delete a wishlist item."""
-    conn, db = get_conn()
-    c = conn.cursor()
-    if db == "postgres":
-        c.execute("DELETE FROM wishlists WHERE id = %s", (item_id,))
-    else:
-        c.execute("DELETE FROM wishlists WHERE id = ?", (item_id,))
-    conn.commit()
-    conn.close()
+    conn = get_conn()
+    conn.table("wishlists").delete().eq("id", item_id).execute()
     return {"success": True}
 
 def reorder_wishlist_item(item_id, direction):
     """Move a wishlist item up or down. Direction is 'up' or 'down'."""
-    conn, db = get_conn()
-    c = conn.cursor()
+    conn = get_conn()
 
     # Get current item
-    if db == "postgres":
-        c.execute("SELECT participant_id, team_id, item_order FROM wishlists WHERE id = %s", (item_id,))
-    else:
-        c.execute("SELECT participant_id, team_id, item_order FROM wishlists WHERE id = ?", (item_id,))
-    current = c.fetchone()
-    if not current:
-        conn.close()
+    result = conn.table("wishlists").select("participant_id, team_id, item_order").eq("id", item_id).execute()
+    if not result.data:
         return {"error": "Item not found"}
 
+    current = result.data[0]
     current_order = current["item_order"]
     participant_id = current["participant_id"]
     team_id = current["team_id"]
 
     # Get all items for this participant
-    if db == "postgres":
-        c.execute("""
-            SELECT id, item_order FROM wishlists
-            WHERE participant_id = %s AND team_id = %s
-            ORDER BY item_order ASC
-        """, (participant_id, team_id))
-    else:
-        c.execute("""
-            SELECT id, item_order FROM wishlists
-            WHERE participant_id = ? AND team_id = ?
-            ORDER BY item_order ASC
-        """, (participant_id, team_id))
-    all_items = c.fetchall()
+    result = conn.table("wishlists").select("id, item_order").eq("participant_id", participant_id).eq("team_id", team_id).order("item_order").execute()
+    all_items = result.data
 
     # Find target item to swap with
     target_item = None
@@ -3169,236 +2877,145 @@ def reorder_wishlist_item(item_id, direction):
             break
 
     if target_item:
+        # Swap orders
         target_order = target_item["item_order"]
-        if db == "postgres":
-            c.execute("UPDATE wishlists SET item_order = %s WHERE id = %s", (target_order, item_id))
-            c.execute("UPDATE wishlists SET item_order = %s WHERE id = %s", (current_order, target_item["id"]))
-        else:
-            c.execute("UPDATE wishlists SET item_order = ? WHERE id = ?", (target_order, item_id))
-            c.execute("UPDATE wishlists SET item_order = ? WHERE id = ?", (current_order, target_item["id"]))
-        conn.commit()
+        conn.table("wishlists").update({"item_order": target_order}).eq("id", item_id).execute()
+        conn.table("wishlists").update({"item_order": current_order}).eq("id", target_item["id"]).execute()
 
-    conn.close()
     return {"success": True}
 
 def get_survey_questions():
     """Get all survey questions ordered by display_order."""
-    conn, db = get_conn()
-    c = conn.cursor()
-    c.execute("""
-        SELECT id, question_text, option_a, option_b, emoji_a, emoji_b, display_order
-        FROM survey_questions
-        ORDER BY display_order ASC
-    """)
-    questions = c.fetchall()
-    conn.close()
-    return questions
+    conn = get_conn()
+    result = conn.table("survey_questions").select("id, question_text, option_a, option_b, emoji_a, emoji_b, display_order").order("display_order").execute()
+    return result.data
 
 def save_survey_response(participant_id, team_id, question_id, answer):
     """Save or update a survey response."""
-    conn, db = get_conn()
-    c = conn.cursor()
+    conn = get_conn()
     ts = datetime.utcnow().isoformat() + "Z"
 
-    if db == "postgres":
-        c.execute("""
-            INSERT INTO survey_responses (participant_id, team_id, question_id, answer, created_at)
-            VALUES (%s, %s, %s, %s, %s)
-            ON CONFLICT (participant_id, team_id, question_id)
-            DO UPDATE SET answer = EXCLUDED.answer, created_at = EXCLUDED.created_at
-        """, (participant_id, team_id, question_id, answer, ts))
-    else:
-        c.execute("""
-            INSERT OR REPLACE INTO survey_responses (participant_id, team_id, question_id, answer, created_at)
-            VALUES (?, ?, ?, ?, ?)
-        """, (participant_id, team_id, question_id, answer, ts))
+    # Use upsert to handle duplicates
+    conn.table("survey_responses").upsert({
+        "participant_id": participant_id,
+        "team_id": team_id,
+        "question_id": question_id,
+        "answer": answer,
+        "created_at": ts
+    }, on_conflict="participant_id,team_id,question_id").execute()
 
     log_event(conn, f'participant_{participant_id}', 'save_survey_response', f'Q{question_id}: {answer}', team_id)
-    conn.commit()
-    conn.close()
     return {"success": True}
 
 def get_survey_responses(participant_id, team_id):
     """Get all survey responses for a participant."""
-    conn, db = get_conn()
-    c = conn.cursor()
-    if db == "postgres":
-        c.execute("""
-            SELECT sr.question_id, sr.answer, sq.question_text, sq.option_a, sq.option_b
-            FROM survey_responses sr
-            JOIN survey_questions sq ON sr.question_id = sq.id
-            WHERE sr.participant_id = %s AND sr.team_id = %s
-            ORDER BY sq.display_order ASC
-        """, (participant_id, team_id))
-    else:
-        c.execute("""
-            SELECT sr.question_id, sr.answer, sq.question_text, sq.option_a, sq.option_b
-            FROM survey_responses sr
-            JOIN survey_questions sq ON sr.question_id = sq.id
-            WHERE sr.participant_id = ? AND sr.team_id = ?
-            ORDER BY sq.display_order ASC
-        """, (participant_id, team_id))
-    responses = c.fetchall()
-    conn.close()
+    conn = get_conn()
+    # Get survey responses with joined question data
+    result = conn.table("survey_responses").select(
+        "question_id, answer, survey_questions(question_text, option_a, option_b, display_order)"
+    ).eq("participant_id", participant_id).eq("team_id", team_id).execute()
+
+    # Flatten the nested structure
+    responses = []
+    for r in result.data:
+        if r.get("survey_questions"):
+            sq = r["survey_questions"]
+            responses.append({
+                "question_id": r["question_id"],
+                "answer": r["answer"],
+                "question_text": sq["question_text"],
+                "option_a": sq["option_a"],
+                "option_b": sq["option_b"],
+                "display_order": sq["display_order"]
+            })
+
+    # Sort by display_order
+    responses.sort(key=lambda x: x.get("display_order", 0))
     return responses
 
 def mark_survey_complete(participant_id, team_id):
     """Mark survey as complete for a participant."""
-    conn, db = get_conn()
-    c = conn.cursor()
-    if db == "postgres":
-        c.execute("UPDATE participants SET has_completed_survey = 1 WHERE id = %s AND team_id = %s", (participant_id, team_id))
-    else:
-        c.execute("UPDATE participants SET has_completed_survey = 1 WHERE id = ? AND team_id = ?", (participant_id, team_id))
+    conn = get_conn()
+    conn.table("participants").update({"has_completed_survey": 1}).eq("id", participant_id).eq("team_id", team_id).execute()
     log_event(conn, f'participant_{participant_id}', 'complete_survey', '', team_id)
-    conn.commit()
-    conn.close()
     return {"success": True}
 
 def get_receiver_wishlist(recipient_name, team_id):
     """Get wishlist for a specific recipient."""
-    conn, db = get_conn()
-    c = conn.cursor()
+    conn = get_conn()
 
-    if db == "postgres":
-        c.execute("SELECT id FROM participants WHERE name = %s AND team_id = %s", (recipient_name, team_id))
-    else:
-        c.execute("SELECT id FROM participants WHERE name = ? AND team_id = ?", (recipient_name, team_id))
-    participant = c.fetchone()
-    if not participant:
-        conn.close()
+    result = conn.table("participants").select("id").eq("name", recipient_name).eq("team_id", team_id).execute()
+    if not result.data:
         return []
 
-    participant_id = participant["id"]
-    conn.close()
+    participant_id = result.data[0]["id"]
     return get_wishlist(participant_id, team_id)
 
 def get_receiver_survey(recipient_name, team_id):
     """Get survey responses for a specific recipient."""
-    conn, db = get_conn()
-    c = conn.cursor()
+    conn = get_conn()
 
-    if db == "postgres":
-        c.execute("SELECT id FROM participants WHERE name = %s AND team_id = %s", (recipient_name, team_id))
-    else:
-        c.execute("SELECT id FROM participants WHERE name = ? AND team_id = ?", (recipient_name, team_id))
-    participant = c.fetchone()
-    if not participant:
-        conn.close()
+    result = conn.table("participants").select("id").eq("name", recipient_name).eq("team_id", team_id).execute()
+    if not result.data:
         return []
 
-    participant_id = participant["id"]
-    conn.close()
+    participant_id = result.data[0]["id"]
     return get_survey_responses(participant_id, team_id)
 
 def send_message(assignment_id, team_id, sender_role, message_type, content):
     """Send a message in an assignment thread."""
-    conn, db = get_conn()
-    c = conn.cursor()
+    conn = get_conn()
     ts = datetime.utcnow().isoformat() + "Z"
 
-    if db == "postgres":
-        c.execute("""
-            INSERT INTO messages (team_id, assignment_id, sender_role, message_type, content, created_at)
-            VALUES (%s, %s, %s, %s, %s, %s)
-        """, (team_id, assignment_id, sender_role, message_type, content, ts))
-    else:
-        c.execute("""
-            INSERT INTO messages (team_id, assignment_id, sender_role, message_type, content, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (team_id, assignment_id, sender_role, message_type, content, ts))
+    conn.table("messages").insert({
+        "team_id": team_id,
+        "assignment_id": assignment_id,
+        "sender_role": sender_role,
+        "message_type": message_type,
+        "content": content,
+        "created_at": ts
+    }).execute()
 
     log_event(conn, f'{sender_role}_assignment_{assignment_id}', 'send_message', f'{message_type}: {content[:50]}', team_id)
-    conn.commit()
-    conn.close()
     return {"success": True}
 
 def get_messages_for_assignment(assignment_id):
     """Get all messages for an assignment thread."""
-    conn, db = get_conn()
-    c = conn.cursor()
-    if db == "postgres":
-        c.execute("""
-            SELECT id, sender_role, message_type, content, is_read, created_at
-            FROM messages
-            WHERE assignment_id = %s
-            ORDER BY created_at ASC
-        """, (assignment_id,))
-    else:
-        c.execute("""
-            SELECT id, sender_role, message_type, content, is_read, created_at
-            FROM messages
-            WHERE assignment_id = ?
-            ORDER BY created_at ASC
-        """, (assignment_id,))
-    messages = c.fetchall()
-    conn.close()
-    return messages
+    conn = get_conn()
+    result = conn.table("messages").select("id, sender_role, message_type, content, is_read, created_at").eq("assignment_id", assignment_id).order("created_at").execute()
+    return result.data
 
 def mark_message_read(message_id):
     """Mark a message as read."""
-    conn, db = get_conn()
-    c = conn.cursor()
-    if db == "postgres":
-        c.execute("UPDATE messages SET is_read = 1 WHERE id = %s", (message_id,))
-    else:
-        c.execute("UPDATE messages SET is_read = 1 WHERE id = ?", (message_id,))
-    conn.commit()
-    conn.close()
+    conn = get_conn()
+    conn.table("messages").update({"is_read": 1}).eq("id", message_id).execute()
     return {"success": True}
 
 def get_my_santa_assignment(participant_name, team_id):
     """Get the assignment where participant is the recipient (receives from Santa)."""
-    conn, db = get_conn()
-    c = conn.cursor()
-    if db == "postgres":
-        c.execute("""
-            SELECT id, drawer_name, timestamp
-            FROM assignments
-            WHERE recipient_name = %s AND team_id = %s
-        """, (participant_name, team_id))
-    else:
-        c.execute("""
-            SELECT id, drawer_name, timestamp
-            FROM assignments
-            WHERE recipient_name = ? AND team_id = ?
-        """, (participant_name, team_id))
-    assignment = c.fetchone()
-    conn.close()
-    return assignment
+    conn = get_conn()
+    result = conn.table("assignments").select("id, drawer_name, timestamp").eq("recipient_name", participant_name).eq("team_id", team_id).execute()
+    if result.data:
+        return result.data[0]
+    return None
 
 def remove_participant(name, team_id):
     """Remove a participant and regenerate all assignments."""
-    conn, db = get_conn()
-    c = conn.cursor()
+    conn = get_conn()
     try:
-        if db == "postgres":
-            c.execute("DELETE FROM participants WHERE name = %s AND team_id = %s", (name, team_id))
-        else:
-            c.execute("DELETE FROM participants WHERE name = ? AND team_id = ?", (name, team_id))
+        conn.table("participants").delete().eq("name", name).eq("team_id", team_id).execute()
         log_event(conn, 'admin', 'remove_participant', name, team_id)
-        conn.commit()
-        conn.close()
 
         # Regenerate assignments
         return generate_all_assignments(team_id)
     except Exception as e:
-        conn.rollback()
-        conn.close()
         return {"error": f"Failed to remove participant: {e}"}
 
 def reset_db(team_id):
-    conn, db = get_conn()
-    c = conn.cursor()
-    if db == "postgres":
-        c.execute("DELETE FROM assignments WHERE team_id = %s", (team_id,))
-        c.execute("UPDATE participants SET assigned = 0 WHERE team_id = %s", (team_id,))
-    else:
-        c.execute("DELETE FROM assignments WHERE team_id = ?", (team_id,))
-        c.execute("UPDATE participants SET assigned = 0 WHERE team_id = ?", (team_id,))
+    conn = get_conn()
+    conn.table("assignments").delete().eq("team_id", team_id).execute()
+    conn.table("participants").update({"assigned": 0}).eq("team_id", team_id).execute()
     log_event(conn, 'admin', 'reset_assignments', 'all unassigned', team_id)
-    conn.commit()
-    conn.close()
 
 def auto_load_participants():
     if not os.path.exists("participants.csv"):
@@ -3440,9 +3057,6 @@ def auto_load_participants():
 # =========================================================
 
 def bootstrap():
-    detect_database()
-    st.session_state.db_type = DB_TYPE
-    st.session_state.db_conn_string = DB_CONN_STRING
     init_db()
     auto_load_participants()
 
@@ -3461,10 +3075,6 @@ def main():
     if "bootstrapped" not in st.session_state:
         bootstrap()
         st.session_state.bootstrapped = True
-    else:
-        global DB_TYPE, DB_CONN_STRING
-        DB_TYPE = st.session_state.db_type
-        DB_CONN_STRING = st.session_state.db_conn_string
 
     # ---------------- CSS ----------------
     st.markdown("""
@@ -4632,10 +4242,8 @@ def main():
             if st.button("🔓 Authenticate", key="auth_btn"):
                 if admin_pin_env and admin_pin_input == admin_pin_env:
                     st.session_state["is_admin"] = True
-                    conn, db = get_conn()
+                    conn = get_conn()
                     log_event(conn, 'admin', 'admin_auth', 'successful', st.session_state.team_id)
-                    conn.commit()
-                    conn.close()
                     st.success("✅ Admin authenticated!")
                     st.rerun()
                 else:
@@ -4672,17 +4280,13 @@ def main():
                 if st.button("Add Participant", key="add_btn"):
                     if new_name.strip():
                         try:
-                            conn, db = get_conn()
-                            c = conn.cursor()
-                            if db == "postgres":
-                                c.execute("INSERT INTO participants (team_id, name, secret) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
-                                          (st.session_state.team_id, new_name.strip(), new_secret.strip()))
-                            else:
-                                c.execute("INSERT OR IGNORE INTO participants (team_id, name, secret) VALUES (?, ?, ?)",
-                                          (st.session_state.team_id, new_name.strip(), new_secret.strip()))
+                            conn = get_conn()
+                            conn.table("participants").upsert({
+                                "team_id": st.session_state.team_id,
+                                "name": new_name.strip(),
+                                "secret": new_secret.strip()
+                            }, on_conflict="team_id,name").execute()
                             log_event(conn, 'admin', 'add_participant', new_name.strip(), st.session_state.team_id)
-                            conn.commit()
-                            conn.close()
                             st.success(f"✅ Added {new_name.strip()}")
                         except Exception as e:
                             st.error(f"DB error: {e}")
@@ -4745,13 +4349,11 @@ def main():
 
             with col2:
                 if st.button("📥 Download Audit Logs CSV", key="dl_logs"):
-                    conn, db = get_conn()
-                    c = conn.cursor()
-                    c.execute("SELECT timestamp, actor, action, details FROM logs ORDER BY id DESC LIMIT 1000")
-                    logs = c.fetchall()
-                    conn.close()
+                    conn = get_conn()
+                    result = conn.table("logs").select("timestamp, actor, action, details").order("id", desc=True).limit(1000).execute()
+                    logs = result.data
                     if logs:
-                        df_logs = pd.DataFrame(logs, columns=['timestamp', 'actor', 'action', 'details'])
+                        df_logs = pd.DataFrame(logs)
                         csv_logs = df_logs.to_csv(index=False)
                         st.download_button("Download", csv_logs, file_name="audit_logs.csv", mime="text/csv")
                     else:
@@ -4761,13 +4363,11 @@ def main():
 
             # Audit Logs Viewer
             with st.expander("📋 View Audit Logs", expanded=False):
-                conn, db = get_conn()
-                c = conn.cursor()
-                c.execute("SELECT timestamp, actor, action, details FROM logs ORDER BY id DESC LIMIT 100")
-                logs = c.fetchall()
-                conn.close()
+                conn = get_conn()
+                result = conn.table("logs").select("timestamp, actor, action, details").order("id", desc=True).limit(100).execute()
+                logs = result.data
                 if logs:
-                    df_logs = pd.DataFrame(logs, columns=['timestamp', 'actor', 'action', 'details'])
+                    df_logs = pd.DataFrame(logs)
                     st.dataframe(df_logs, use_container_width=True)
                 else:
                     st.info("No logs yet.")
@@ -4776,19 +4376,12 @@ def main():
         st.caption("🔒 Privacy: Assignments are stored server-side and hidden from everyone, including the admin. Keep this URL private!")
 
         # Show simple status counts
-        conn, db = get_conn()
-        c = conn.cursor()
-        if db == "postgres":
-            c.execute("SELECT COUNT(*) as revealed FROM assignments WHERE revealed = 1 AND team_id = %s", (st.session_state.team_id,))
-            revealed_count = c.fetchone()["revealed"]
-            c.execute("SELECT COUNT(*) as total FROM participants WHERE team_id = %s", (st.session_state.team_id,))
-            total = c.fetchone()["total"]
-        else:
-            c.execute("SELECT COUNT(*) as revealed FROM assignments WHERE revealed = 1 AND team_id = ?", (st.session_state.team_id,))
-            revealed_count = c.fetchone()["revealed"]
-            c.execute("SELECT COUNT(*) as total FROM participants WHERE team_id = ?", (st.session_state.team_id,))
-            total = c.fetchone()["total"]
-        conn.close()
+        conn = get_conn()
+        revealed_result = conn.table("assignments").select("id", count="exact").eq("revealed", 1).eq("team_id", st.session_state.team_id).execute()
+        revealed_count = revealed_result.count
+
+        total_result = conn.table("participants").select("id", count="exact").eq("team_id", st.session_state.team_id).execute()
+        total = total_result.count
 
         waiting_count = total - revealed_count
         st.caption(f"Revealed: {revealed_count} • Waiting: {waiting_count}")
